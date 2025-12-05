@@ -60,6 +60,45 @@ def global_exception_handler(exc_type, exc_value, exc_traceback):
 sys.excepthook = global_exception_handler
 
 
+def show_auto_close_message(parent, title, message, icon=QMessageBox.Information, timeout=1000):
+    """자동으로 닫히는 메시지 박스"""
+    msg = QMessageBox(parent)
+    msg.setWindowTitle(title)
+    msg.setText(message)
+    msg.setIcon(icon)
+    msg.setStandardButtons(QMessageBox.Ok)
+    
+    # 타이머로 자동 닫기 (parent가 있으면 parent에 연결, 없으면 QApplication에 연결)
+    app = QApplication.instance()
+    timer_parent = parent if parent else app
+    timer = QTimer(timer_parent)
+    timer.setSingleShot(True)
+    
+    def close_message():
+        try:
+            if msg.isVisible():
+                # done() 메서드를 사용하여 메시지 박스 닫기
+                msg.done(QMessageBox.Ok)
+        except Exception as e:
+            logger.warning(f"메시지 박스 닫기 오류: {e}")
+            try:
+                # done()이 실패하면 accept() 시도
+                msg.accept()
+            except:
+                pass
+    
+    timer.timeout.connect(close_message)
+    
+    # 메시지 박스가 표시된 후 타이머 시작 (이벤트 루프가 시작된 후)
+    def start_timer():
+        timer.start(timeout)
+    
+    # 다음 이벤트 루프에서 타이머 시작
+    QTimer.singleShot(10, start_timer)
+    
+    msg.exec_()
+
+
 class AutoReadThread(QThread):
     """자동 읽기 스레드"""
     card_read = pyqtSignal(str)  # 카드번호 읽기 성공 시그널
@@ -349,7 +388,7 @@ class CardReaderDesktop(QMainWindow):
         """리더기 연결/해제"""
         try:
             if not PCSC_AVAILABLE:
-                QMessageBox.critical(self, "오류", "PC/SC 라이브러리를 사용할 수 없습니다.\n설치 방법:\nmacOS: brew install pcsc-lite\nLinux: sudo apt-get install pcscd libpcsclite-dev")
+                show_auto_close_message(self, "오류", "PC/SC 라이브러리를 사용할 수 없습니다.\n설치 방법:\nmacOS: brew install pcsc-lite\nLinux: sudo apt-get install pcscd libpcsclite-dev", QMessageBox.Critical, 3000)
                 return
             
             if self.is_connected:
@@ -398,13 +437,15 @@ class CardReaderDesktop(QMainWindow):
                                     time.sleep(retry_delay)
                                 else:
                                     self.add_log("리더기 연결 실패 - 리더기를 확인하세요", "ERROR")
-                                    QMessageBox.warning(
+                                    show_auto_close_message(
                                         self, 
                                         "연결 실패", 
                                         "리더기 연결에 실패했습니다.\n\n확인 사항:\n"
                                         "- 리더기가 연결되어 있는지 확인\n"
                                         "- 다른 프로그램에서 리더기를 사용 중이 아닌지 확인\n"
-                                        "- PC/SC 라이브러리가 설치되어 있는지 확인"
+                                        "- PC/SC 라이브러리가 설치되어 있는지 확인",
+                                        QMessageBox.Warning,
+                                        2000  # 경고는 2초
                                     )
                         except Exception as e:
                             error_msg = str(e)
@@ -415,11 +456,13 @@ class CardReaderDesktop(QMainWindow):
                                 time.sleep(retry_delay)
                             else:
                                 self.add_log(f"리더기 연결 오류: {error_msg}", "ERROR")
-                                QMessageBox.critical(
+                                show_auto_close_message(
                                     self, 
                                     "연결 오류", 
                                     f"리더기 연결 중 오류가 발생했습니다:\n\n{error_msg}\n\n"
-                                    "리더기와 PC/SC 라이브러리를 확인하세요."
+                                    "리더기와 PC/SC 라이브러리를 확인하세요.",
+                                    QMessageBox.Critical,
+                                    2000  # 오류는 2초
                                 )
                     
                     self.connect_button.setEnabled(True)
@@ -433,14 +476,14 @@ class CardReaderDesktop(QMainWindow):
         except Exception as e:
             logger.error(f"연결 토글 오류: {e}")
             self.add_log(f"연결 토글 오류: {e}", "ERROR")
-            QMessageBox.critical(self, "오류", f"연결 처리 중 오류가 발생했습니다:\n\n{e}")
+            show_auto_close_message(self, "오류", f"연결 처리 중 오류가 발생했습니다:\n\n{e}", QMessageBox.Critical, 2000)
             self.connect_button.setEnabled(True)
             self.update_status()
     
     def read_card(self):
         """카드 읽기"""
         if not self.is_connected or not self.card_reader:
-            QMessageBox.critical(self, "오류", "먼저 리더기를 연결하세요.")
+            show_auto_close_message(self, "오류", "먼저 리더기를 연결하세요.", QMessageBox.Critical, 1500)
             return
         
         if self.is_reading:
@@ -528,16 +571,26 @@ class CardReaderDesktop(QMainWindow):
         self.read_button.setEnabled(True)
         self.is_reading = False
         
-        # 같은 카드번호가 아니면 메시지 표시
+        # 같은 카드번호가 아니면 메시지 표시 (1초 후 자동 닫힘)
         if self.last_card_number != card_number:
-            QMessageBox.information(self, "성공", f"카드번호를 읽었습니다: {card_number}\n{'자동 입력 완료' if self.auto_paste_checkbox.isChecked() else 'Ctrl+V로 붙여넣으세요'}")
+            message = f"카드번호를 읽었습니다: {card_number}\n{'자동 입력 완료' if self.auto_paste_checkbox.isChecked() else 'Ctrl+V로 붙여넣으세요'}"
+            show_auto_close_message(self, "성공", message, QMessageBox.Information, 1000)
             self.last_card_number = card_number
     
     def auto_paste_card_number(self, card_number: str):
         """전체 화면에서 카드번호 자동 입력"""
         try:
             # 짧은 대기 (사용자가 입력 필드에 포커스를 둘 시간)
-            time.sleep(0.2)
+            time.sleep(0.3)
+            
+            # 클립보드에 다시 복사 (확실하게 하기 위해)
+            try:
+                pyperclip.copy(card_number)
+            except Exception as e:
+                logger.warning(f"클립보드 복사 재시도 오류: {e}")
+            
+            # 약간의 대기
+            time.sleep(0.1)
             
             # Ctrl+V (또는 Cmd+V)로 붙여넣기 시뮬레이션
             # macOS는 Cmd, Windows/Linux는 Ctrl
@@ -545,9 +598,19 @@ class CardReaderDesktop(QMainWindow):
             system = platform.system()
             
             if system == "Darwin":  # macOS
-                pyautogui.hotkey('command', 'v')
+                # 더 안정적인 방법: 키를 순차적으로 누르고 떼기
+                pyautogui.keyDown('command')
+                time.sleep(0.05)  # 키가 눌리는 시간 확보
+                pyautogui.press('v')
+                time.sleep(0.05)
+                pyautogui.keyUp('command')
             else:  # Windows, Linux
-                pyautogui.hotkey('ctrl', 'v')
+                # 더 안정적인 방법: 키를 순차적으로 누르고 떼기
+                pyautogui.keyDown('ctrl')
+                time.sleep(0.05)  # 키가 눌리는 시간 확보
+                pyautogui.press('v')
+                time.sleep(0.05)
+                pyautogui.keyUp('ctrl')
             
             self.add_log("자동 입력 완료 (Ctrl+V/Cmd+V 시뮬레이션)", "SUCCESS")
             return True
@@ -559,17 +622,17 @@ class CardReaderDesktop(QMainWindow):
         """클립보드 복사"""
         card_number = self.card_number_label.text()
         if not card_number or card_number == "카드를 읽어주세요":
-            QMessageBox.critical(self, "오류", "복사할 카드번호가 없습니다.")
+            show_auto_close_message(self, "오류", "복사할 카드번호가 없습니다.", QMessageBox.Critical, 1500)
             return
         
         if self.card_reader:
             success = self.card_reader.copy_to_clipboard(card_number)
             if success:
                 self.add_log(f"클립보드 복사: {card_number}", "SUCCESS")
-                QMessageBox.information(self, "성공", "클립보드에 복사되었습니다.")
+                show_auto_close_message(self, "성공", "클립보드에 복사되었습니다.", QMessageBox.Information, 1000)
             else:
                 self.add_log("클립보드 복사 실패", "ERROR")
-                QMessageBox.critical(self, "오류", "클립보드 복사에 실패했습니다.")
+                show_auto_close_message(self, "오류", "클립보드 복사에 실패했습니다.", QMessageBox.Critical, 1500)
     
     def toggle_auto_read(self):
         """자동 읽기 토글"""
@@ -635,7 +698,7 @@ class CardReaderDesktop(QMainWindow):
                 success = self.card_reader.copy_to_clipboard(card_number)
                 if success:
                     self.add_log(f"히스토리에서 복사: {card_number}", "SUCCESS")
-                    QMessageBox.information(self, "성공", f"클립보드에 복사되었습니다: {card_number}")
+                    show_auto_close_message(self, "성공", f"클립보드에 복사되었습니다: {card_number}", QMessageBox.Information, 1000)
     
     def clear_history(self):
         """히스토리 전체 삭제"""
