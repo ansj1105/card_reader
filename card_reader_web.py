@@ -7,6 +7,9 @@ FastAPI + uvicorn을 사용한 웹 기반 인터페이스
 
 import logging
 import threading
+import asyncio
+import sys
+import traceback
 from typing import Optional, Dict, List
 from datetime import datetime
 from fastapi import FastAPI, HTTPException
@@ -40,6 +43,7 @@ class StatusResponse(BaseModel):
     reading: bool
     pcsc_available: bool
     message: str
+    platform: Optional[str] = None  # 운영체제 정보
 
 
 class CardNumberResponse(BaseModel):
@@ -67,7 +71,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>카드 리더기 프로그램</title>
+    <title>카드 리더기 관리</title>
     <style>
         * {
             margin: 0;
@@ -471,6 +475,13 @@ HTML_TEMPLATE = """
             <label for="auto-read">자동 읽기 (카드 감지 시) - 기본 활성화</label>
         </div>
         
+        <div style="background: #e7f3ff; border-left: 4px solid #2196F3; padding: 12px; margin-bottom: 20px; border-radius: 5px;">
+            <strong style="color: #1976D2;">💡 사용 팁:</strong>
+            <p style="margin: 5px 0 0 0; color: #555; font-size: 0.9em;">
+                카드 번호는 자동으로 클립보드에 복사됩니다. 다른 애플리케이션의 입력 필드에서 <strong>Ctrl+V</strong> (Mac: <strong>Cmd+V</strong>)로 붙여넣으세요.
+            </p>
+        </div>
+        
         <div class="card-number-section">
             <h3 style="margin-bottom: 15px;">카드번호</h3>
             <div id="card-number" class="card-number-display">카드를 읽어주세요</div>
@@ -494,6 +505,26 @@ HTML_TEMPLATE = """
     <script>
         let autoReadInterval = null;
         let isAutoReadEnabled = false;
+        let lastFocusedInput = null; // 마지막으로 포커스된 입력 요소 추적
+        
+        // 텍스트 입력이 가능한 입력 필드인지 확인하는 헬퍼 함수 (위에 정의됨)
+        
+        // 모든 입력 필드에 포커스 이벤트 리스너 추가
+        document.addEventListener('DOMContentLoaded', function() {
+            // 페이지의 모든 텍스트 입력 필드에 포커스 이벤트 추가
+            document.addEventListener('focusin', function(e) {
+                if (isTextInput(e.target)) {
+                    lastFocusedInput = e.target;
+                }
+            }, true); // 캡처 단계에서 이벤트 처리
+            
+            // 마우스 오버 이벤트로도 추적 (더 나은 사용자 경험)
+            document.addEventListener('mouseover', function(e) {
+                if (isTextInput(e.target)) {
+                    lastFocusedInput = e.target;
+                }
+            }, true);
+        });
         
         // 상태 업데이트
         async function updateStatus() {
@@ -539,34 +570,34 @@ HTML_TEMPLATE = """
                     }
                     
                     // 운영체제별 설치 방법 표시
-                    const userAgent = navigator.userAgent || navigator.vendor || window.opera;
+                    const platform = data.platform || 'Unknown';
                     let installHtml = '';
                     
-                    if (/Mac|iPhone|iPod|iPad/i.test(userAgent) || navigator.platform === 'MacIntel') {
+                    if (platform === 'Darwin') {
                         // macOS
                         installHtml = `
                             <ol style="margin: 0; padding-left: 20px; color: #856404;">
                                 <li style="margin-bottom: 8px;">터미널을 엽니다.</li>
                                 <li style="margin-bottom: 8px;">다음 명령을 실행합니다:</li>
                                 <li style="margin-bottom: 8px;">
-                                    <code style="background: #f8f9fa; padding: 4px 8px; border-radius: 4px; display: block; margin-top: 5px;">
+                                    <code style="background: #f8f9fa; padding: 4px 8px; border-radius: 4px; display: block; margin-top: 5px; font-family: 'Courier New', monospace;">
                                         brew install pcsc-lite
                                     </code>
                                 </li>
                                 <li style="margin-bottom: 8px;">설치 후 프로그램을 다시 시작합니다.</li>
                             </ol>
                         `;
-                    } else if (/Linux/i.test(userAgent) || navigator.platform === 'Linux x86_64') {
+                    } else if (platform === 'Linux') {
                         // Linux
                         installHtml = `
                             <ol style="margin: 0; padding-left: 20px; color: #856404;">
                                 <li style="margin-bottom: 8px;">터미널을 엽니다.</li>
                                 <li style="margin-bottom: 8px;">다음 명령을 실행합니다:</li>
                                 <li style="margin-bottom: 8px;">
-                                    <code style="background: #f8f9fa; padding: 4px 8px; border-radius: 4px; display: block; margin-top: 5px;">
-                                        sudo apt-get update<br>
-                                        sudo apt-get install pcscd libpcsclite-dev<br>
-                                        sudo systemctl start pcscd
+                                    <code style="background: #f8f9fa; padding: 4px 8px; border-radius: 4px; display: block; margin-top: 5px; font-family: 'Courier New', monospace; white-space: pre;">
+sudo apt-get update
+sudo apt-get install pcscd libpcsclite-dev
+sudo systemctl start pcscd
                                     </code>
                                 </li>
                                 <li style="margin-bottom: 8px;">설치 후 프로그램을 다시 시작합니다.</li>
@@ -650,6 +681,32 @@ HTML_TEMPLATE = """
             }
         }
         
+        // 텍스트 입력이 가능한 입력 필드인지 확인
+        function isTextInput(element) {
+            if (!element) return false;
+            
+            // textarea는 항상 텍스트 입력 가능
+            if (element.tagName === 'TEXTAREA') {
+                return true;
+            }
+            
+            // input 요소인 경우 타입 확인
+            if (element.tagName === 'INPUT') {
+                const type = element.type ? element.type.toLowerCase() : 'text';
+                // 텍스트 입력이 가능한 타입들
+                const textInputTypes = ['text', 'password', 'email', 'number', 'tel', 'url', 'search', 'date', 'datetime', 'datetime-local', 'month', 'time', 'week'];
+                // contenteditable 속성이 있는 요소도 포함
+                return textInputTypes.includes(type) || element.contentEditable === 'true';
+            }
+            
+            // contenteditable 속성이 있는 div, span 등
+            if (element.contentEditable === 'true') {
+                return true;
+            }
+            
+            return false;
+        }
+        
         // 현재 포커스된 입력 요소에 텍스트 삽입 (검증 포함)
         function pasteToFocusedInput(text) {
             // 먼저 카드번호 검증
@@ -660,29 +717,114 @@ HTML_TEMPLATE = """
             }
             
             try {
-                const activeElement = document.activeElement;
+                // 1. 먼저 현재 포커스된 요소 확인
+                let targetInput = document.activeElement;
                 
-                // input 또는 textarea 요소인지 확인
-                if (activeElement && (activeElement.tagName === 'INPUT' || activeElement.tagName === 'TEXTAREA')) {
-                    const input = activeElement;
-                    const start = input.selectionStart || 0;
-                    const end = input.selectionEnd || 0;
-                    const value = input.value || '';
+                // 텍스트 입력이 가능한 요소인지 확인
+                if (!isTextInput(targetInput)) {
+                    targetInput = null;
+                }
+                
+                // 2. 포커스된 요소가 없거나 텍스트 입력 필드가 아니면, 마지막으로 포커스된 요소 사용
+                if (!targetInput && lastFocusedInput && isTextInput(lastFocusedInput)) {
+                    targetInput = lastFocusedInput;
+                }
+                
+                // 3. 마지막 포커스 요소도 없으면, 현재 페이지에서 포커스 가능한 텍스트 입력 필드 찾기
+                if (!targetInput) {
+                    // 현재 포커스된 텍스트 입력 필드 찾기
+                    const focusedInputs = document.querySelectorAll('input:focus, textarea:focus, [contenteditable="true"]:focus');
+                    for (let input of focusedInputs) {
+                        if (isTextInput(input)) {
+                            targetInput = input;
+                            break;
+                        }
+                    }
                     
-                    // 선택된 텍스트를 교체하거나 커서 위치에 삽입
-                    const newValue = value.substring(0, start) + text + value.substring(end);
-                    input.value = newValue;
+                    // 포커스된 것이 없으면 페이지의 텍스트 입력 필드 중 하나 찾기
+                    if (!targetInput) {
+                        const allInputs = document.querySelectorAll('input, textarea, [contenteditable="true"]');
+                        for (let input of allInputs) {
+                            if (isTextInput(input)) {
+                                targetInput = input;
+                                break;
+                            }
+                        }
+                    }
+                }
+                
+                // 텍스트 입력이 가능한 요소인지 최종 확인
+                if (targetInput && isTextInput(targetInput)) {
+                    const input = targetInput;
                     
-                    // 커서 위치 조정
-                    const newCursorPos = start + text.length;
-                    input.setSelectionRange(newCursorPos, newCursorPos);
+                    // 입력 필드에 포커스 주기 (가능한 경우)
+                    try {
+                        input.focus();
+                    } catch (e) {
+                        // 포커스 실패해도 계속 진행
+                    }
                     
-                    // input 이벤트 발생 (React 등 프레임워크에서 인식하도록)
-                    input.dispatchEvent(new Event('input', { bubbles: true }));
-                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                    // contenteditable 요소 처리
+                    if (input.contentEditable === 'true') {
+                        try {
+                            const selection = window.getSelection();
+                            const range = document.createRange();
+                            range.selectNodeContents(input);
+                            range.collapse(false); // 끝으로 이동
+                            selection.removeAllRanges();
+                            selection.addRange(range);
+                            input.textContent = (input.textContent || '') + text;
+                            input.dispatchEvent(new Event('input', { bubbles: true }));
+                            addLog('입력창에 카드번호 삽입 성공: ' + text, 'success');
+                            return true;
+                        } catch (e) {
+                            console.error('contenteditable 삽입 오류:', e);
+                        }
+                    }
                     
-                    addLog('입력창에 카드번호 삽입 성공: ' + text, 'success');
-                    return true;
+                    // 일반 input/textarea 처리
+                    try {
+                        const start = input.selectionStart !== null && input.selectionStart !== undefined ? input.selectionStart : 0;
+                        const end = input.selectionEnd !== null && input.selectionEnd !== undefined ? input.selectionEnd : 0;
+                        const value = input.value || '';
+                        
+                        // 선택된 텍스트를 교체하거나 커서 위치에 삽입
+                        const newValue = value.substring(0, start) + text + value.substring(end);
+                        input.value = newValue;
+                        
+                        // 커서 위치 조정 (텍스트 입력 필드인 경우에만)
+                        try {
+                            const newCursorPos = start + text.length;
+                            input.setSelectionRange(newCursorPos, newCursorPos);
+                        } catch (e) {
+                            // setSelectionRange 실패는 무시 (일부 타입에서는 지원하지 않음)
+                            console.warn('setSelectionRange 실패 (무시됨):', e.message);
+                        }
+                        
+                        // input 이벤트 발생 (React 등 프레임워크에서 인식하도록)
+                        input.dispatchEvent(new Event('input', { bubbles: true }));
+                        input.dispatchEvent(new Event('change', { bubbles: true }));
+                        
+                        // 포커스 유지
+                        try {
+                            input.focus();
+                        } catch (e) {
+                            // 무시
+                        }
+                        
+                        addLog('입력창에 카드번호 삽입 성공: ' + text, 'success');
+                        return true;
+                    } catch (e) {
+                        console.error('텍스트 삽입 오류:', e);
+                        addLog('입력 요소에 삽입 오류: ' + e.message, 'error');
+                        return false;
+                    }
+                } else {
+                    // 입력 필드를 찾지 못한 경우 - 다른 페이지나 다른 애플리케이션의 입력 필드일 수 있음
+                    // 클립보드에는 이미 복사되었으므로 사용자에게 안내
+                    // 웹 브라우저 보안 정책상 다른 애플리케이션이나 다른 도메인 페이지에는 자동 입력이 불가능합니다
+                    addLog('입력 필드를 찾을 수 없습니다. 클립보드에 복사되었으니 다른 애플리케이션에서 Ctrl+V(또는 Cmd+V)로 붙여넣으세요.', 'info');
+                    return false;
                 }
             } catch (error) {
                 addLog('입력 요소에 삽입 오류: ' + error.message, 'error');
@@ -844,13 +986,14 @@ HTML_TEMPLATE = """
                                     if (pasted) {
                                         showMessage('카드번호를 읽어 입력창에 삽입하고 클립보드에 복사했습니다.', 'success');
                                     } else {
-                                        showMessage('카드번호를 읽었고 클립보드에 복사되었습니다.', 'success');
+                                        // 다른 애플리케이션이나 다른 페이지의 입력 필드인 경우
+                                        showMessage('카드번호를 읽었고 클립보드에 복사되었습니다. 다른 애플리케이션에서 Ctrl+V(또는 Cmd+V)로 붙여넣으세요.', 'success');
                                     }
                                 } else {
                                     if (pasted) {
                                         showMessage('카드번호를 읽어 입력창에 삽입했습니다.', 'success');
                                     } else {
-                                        showMessage('카드번호를 읽었습니다.', 'success');
+                                        showMessage('카드번호를 읽었습니다. 클립보드 복사 버튼을 눌러 복사하세요.', 'info');
                                     }
                                 }
                                 lastCardNumber = data.card_number;
@@ -1025,14 +1168,15 @@ async def get_status():
     """상태 조회"""
     global is_connected, is_reading
     
+    import platform as platform_module
+    system = platform_module.system()
+    
     message = ""
     if not PCSC_AVAILABLE:
-        import platform
-        system = platform.system()
         if system == "Darwin":  # macOS
-            message = "PC/SC 라이브러리를 사용할 수 없습니다. 다음 명령으로 설치하세요: brew install pcsc-lite (설치 후 가상환경 재생성: rm -rf venv && ./run_gui.sh)"
+            message = "PC/SC 라이브러리가 설치되지 않았습니다. 아래 설치 방법을 참고하세요."
         elif system == "Linux":
-            message = "PC/SC 라이브러리를 사용할 수 없습니다. 다음 명령으로 설치하세요: sudo apt-get install pcscd libpcsclite-dev"
+            message = "PC/SC 라이브러리가 설치되지 않았습니다. 아래 설치 방법을 참고하세요."
         else:
             message = "PC/SC 라이브러리를 사용할 수 없습니다. PC/SC 드라이버를 설치하세요."
     
@@ -1040,7 +1184,8 @@ async def get_status():
         connected=is_connected,
         reading=is_reading,
         pcsc_available=PCSC_AVAILABLE,
-        message=message
+        message=message,
+        platform=system
     )
 
 
@@ -1064,7 +1209,7 @@ async def detect_card():
 
 @app.post("/api/connect")
 async def connect_reader():
-    """리더기 연결/해제"""
+    """리더기 연결/해제 (재시도 로직 포함)"""
     global card_reader, is_connected
     
     if not PCSC_AVAILABLE:
@@ -1073,24 +1218,57 @@ async def connect_reader():
     try:
         if is_connected:
             # 연결 해제
-            if card_reader:
-                card_reader.disconnect()
-                card_reader = None
+            try:
+                if card_reader:
+                    card_reader.disconnect()
+                    card_reader = None
+            except Exception as e:
+                logger.warning(f"리더기 연결 해제 오류: {e}")
+            
             is_connected = False
             return {"success": True, "connected": False, "message": "리더기 연결 해제됨"}
         else:
-            # 연결
-            card_reader = CardReader()
-            success = card_reader.connect_to_reader()
+            # 연결 시도 (재시도 로직 포함)
+            max_retries = 3
+            retry_delay = 1  # 초
             
-            if success:
-                is_connected = True
-                return {"success": True, "connected": True, "message": "리더기 연결 성공"}
-            else:
-                return {"success": False, "connected": False, "message": "리더기 연결 실패"}
+            for attempt in range(max_retries):
+                try:
+                    card_reader = CardReader()
+                    success = card_reader.connect_to_reader()
+                    
+                    if success:
+                        is_connected = True
+                        return {"success": True, "connected": True, "message": "리더기 연결 성공"}
+                    else:
+                        if attempt < max_retries - 1:
+                            logger.warning(f"리더기 연결 실패 (재시도 {attempt + 1}/{max_retries})")
+                            await asyncio.sleep(retry_delay)
+                        else:
+                            error_msg = "리더기 연결 실패 - 리더기를 확인하세요"
+                            logger.error(error_msg)
+                            return {
+                                "success": False, 
+                                "connected": False, 
+                                "message": error_msg + "\n확인 사항: 리더기 연결 상태, 다른 프로그램 사용 여부, PC/SC 라이브러리 설치"
+                            }
+                except Exception as e:
+                    error_msg = str(e)
+                    logger.error(f"리더기 연결 오류 (시도 {attempt + 1}): {e}")
+                    
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay)
+                    else:
+                        return {
+                            "success": False, 
+                            "connected": False, 
+                            "message": f"리더기 연결 오류: {error_msg}\n리더기와 PC/SC 라이브러리를 확인하세요."
+                        }
+            
+            return {"success": False, "connected": False, "message": "리더기 연결 실패"}
     except Exception as e:
-        logger.error(f"연결 오류: {e}")
-        return {"success": False, "connected": False, "message": f"연결 오류: {str(e)}"}
+        logger.error(f"연결 처리 오류: {e}")
+        return {"success": False, "connected": False, "message": f"연결 처리 오류: {str(e)}"}
 
 
 @app.post("/api/read", response_model=CardNumberResponse)
@@ -1254,6 +1432,34 @@ def main():
     import threading
     import time
     import platform
+    import traceback
+    import signal
+    
+    # 전역 예외 핸들러 설정
+    def exception_handler(exc_type, exc_value, exc_traceback):
+        """전역 예외 핸들러"""
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        
+        error_msg = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+        logger.critical(f"치명적 오류 발생:\n{error_msg}")
+        print(f"\n{'='*70}")
+        print("치명적 오류가 발생했습니다!")
+        print("="*70)
+        print(error_msg)
+        print("="*70)
+        print("\n프로그램을 종료합니다.")
+    
+    sys.excepthook = exception_handler
+    
+    # 시그널 핸들러 (정상 종료)
+    def signal_handler(sig, frame):
+        logger.info("프로그램 종료 신호 수신")
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
     
     # uvicorn 액세스 로그 레벨 조정 (status 요청은 로그에 남기지 않음)
     uvicorn_logger = uvicorn_logging.getLogger("uvicorn.access")
@@ -1305,14 +1511,28 @@ def main():
     
     # 브라우저 자동 실행 (약간의 지연 후)
     def open_browser():
-        time.sleep(1.5)  # 서버 시작 대기
-        webbrowser.open("http://localhost:8000")
-        logger.info("브라우저가 자동으로 열렸습니다: http://localhost:8000")
+        try:
+            time.sleep(1.5)  # 서버 시작 대기
+            webbrowser.open("http://localhost:8000")
+            logger.info("브라우저가 자동으로 열렸습니다: http://localhost:8000")
+        except Exception as e:
+            logger.warning(f"브라우저 자동 실행 실패: {e}")
+            print(f"\n브라우저를 수동으로 열어주세요: http://localhost:8000\n")
     
     browser_thread = threading.Thread(target=open_browser, daemon=True)
     browser_thread.start()
     
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    # uvicorn 실행 (예외 처리 포함)
+    try:
+        uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    except Exception as e:
+        logger.critical(f"서버 실행 오류: {e}")
+        print(f"\n{'='*70}")
+        print("서버 실행 중 오류가 발생했습니다!")
+        print("="*70)
+        print(f"오류: {e}")
+        print("="*70)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
