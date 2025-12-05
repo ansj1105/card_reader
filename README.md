@@ -38,11 +38,15 @@
 
 3. **배포:**
    - `dist/` 폴더의 실행 파일을 다른 컴퓨터로 복사
+     - **macOS:** `CardReaderWeb.app`, `CardReaderDesktop.app`
+     - **Windows:** `CardReaderWeb.exe`, `CardReaderDesktop.exe`
+     - **Linux:** `CardReaderWeb`, `CardReaderDesktop`
    - **중요:** PC/SC 라이브러리는 대상 컴퓨터에 별도로 설치해야 합니다:
      - macOS: `brew install pcsc-lite`
      - Linux: `sudo apt-get install pcscd libpcsclite-dev`
      - Windows: 기본 제공 (추가 설치 불필요)
-   - 바로가기를 더블클릭하여 실행 (브라우저가 자동으로 열림)
+   - 실행 파일을 더블클릭하여 실행
+   - **자세한 배포 가이드는 `DEPLOYMENT.md` 파일을 참고하세요.**
 
 **참고:** 실행 파일은 Python이 포함되어 있어 Python 설치 없이도 작동합니다. 다만 PC/SC 라이브러리는 시스템 레벨에서 설치되어 있어야 합니다.
 
